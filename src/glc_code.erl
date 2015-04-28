@@ -66,7 +66,8 @@ abstract_module(Module, Data) ->
 
 %% @private Generate an abstract dispatch module.
 -spec abstract_module_(atom(), #module{}) -> [?erl:syntaxTree()].
-abstract_module_(Module, #module{tables=Tables, qtree=Tree}=Data) ->
+abstract_module_(Module, #module{tables=Tables, 
+                                 qtree=Tree, store=Store}=Data) ->
     {_, ParamsTable} = lists:keyfind(params, 1, Tables),
     {_, CountsTable} = lists:keyfind(counters, 1, Tables),
     AbstractMod = [
@@ -92,6 +93,12 @@ abstract_module_(Module, #module{tables=Tables, qtree=Tree}=Data) ->
         ?erl:arity_qualifier(
             ?erl:atom(table),
             ?erl:integer(1)),
+        %?erl:arity_qualifier(
+        %    ?erl:atom(sidejob),
+        %    ?erl:integer(2)),
+        ?erl:arity_qualifier(
+            ?erl:atom(runjob),
+            ?erl:integer(2)),
         %% handle/1
         ?erl:arity_qualifier(
             ?erl:atom(handle),
@@ -132,6 +139,13 @@ abstract_module_(Module, #module{tables=Tables, qtree=Tree}=Data) ->
          [abstract_count(input),
           ?erl:application(none,
             ?erl:atom(handle_), [?erl:variable("Event")])])]),
+     ?erl:function(
+       ?erl:atom(runjob),
+       [?erl:clause([?erl:variable("Fun"), ?erl:variable("Event")], none,
+         [abstract_count(job_input),
+          ?erl:application(none,
+            ?erl:atom(job_), [?erl:variable("Fun"),
+                              ?erl:variable("Event")])])]),
      %% input_(Node, App, Pid, Tags, Values) - filter roots
      ?erl:function(
         ?erl:atom(handle_),
@@ -139,7 +153,27 @@ abstract_module_(Module, #module{tables=Tables, qtree=Tree}=Data) ->
          abstract_filter(Tree, Data, #state{
             event=?erl:variable("Event"),
             paramstab=ParamsTable,
-            countstab=CountsTable}))])
+            countstab=CountsTable}))]),
+     ?erl:function(
+        ?erl:atom(job_),
+        [?erl:clause([?erl:variable("Fun"),
+                      ?erl:variable("Meta")], none,
+
+             [?erl:application(none,
+                        ?erl:atom(job_result), [
+                          ?erl:catch_expr(
+                            abstract_apply(timer, tc, [
+                                ?erl:variable("Fun"),
+                                ?erl:list([?erl:variable("Meta"), 
+                                           ?erl:abstract(Store)])
+                                ])),
+                            ?erl:variable("Meta")])
+             ] 
+        )]),
+     ?erl:function(
+        ?erl:atom(job_result),
+        abstract_runjob(Data)
+        )
     ],
     %% Transform Term -> Key to Key -> Term
     gr_param:transform(ParamsTable),
@@ -172,6 +206,10 @@ abstract_query({any, [{with, _Q, _A}|_] = I}) ->
 abstract_query({all, [{with, _Q, _A}|_] = I}) ->
     Queries = glc_lib:reduce(glc:all([Q || {with, Q, _} <- I])),
     [?erl:abstract(Queries)];
+%=======
+%abstract_query({with, _, _}) ->
+%    [?erl:abstract([])];
+%>>>>>>> Add support for job processing and variable storage with local state
 abstract_query(Query) ->
     [?erl:abstract(Query)].
 
@@ -183,6 +221,53 @@ abstract_get(#module{'query'=_Query, store=Store}) ->
     [?erl:clause([?erl:abstract(K)], none, 
                  abstract_query(abstract_query_find(K, Store)))
         || {K, _} <- Store].
+
+%% @private 
+abstract_runjob(#module{'query'=_Query, store=_Store}) ->
+    Time = abstract_apply(erlang, '/', [?erl:variable("Time"),
+                                        ?erl:abstract(1000000)]),
+    [?erl:clause([?erl:variable("JobResult"),
+                  ?erl:variable("Meta")], none,
+      [
+       ?erl:case_expr(?erl:variable("JobResult"),
+         [
+          ?erl:clause(
+            [?erl:tuple([?erl:atom('EXIT'),?erl:variable("Reason")])],
+            none,
+            [abstract_count(job_error),
+             ?erl:tuple([?erl:atom(error), ?erl:variable("Reason")])]),
+
+          ?erl:clause(
+            [?erl:tuple([?erl:variable("Time"), ?erl:variable("Result")])],
+            none,
+            [?erl:case_expr(?erl:variable("Result"),
+               [
+                ?erl:clause(
+                  [?erl:tuple([?erl:atom(error),?erl:variable("Reason")])],
+                  none,
+                  [abstract_count(job_error),
+                   ?erl:tuple([?erl:atom(error), ?erl:variable("Reason")])]),
+
+                ?erl:clause(
+                  [?erl:variable("Result")],
+                  none,
+                  [abstract_count(job_run),
+                   ?erl:application(none, ?erl:atom(handle_), abstract_job(Time)),
+                   abstract_count(job_time, ?erl:variable("Time")),
+                   ?erl:variable("Result")])
+               ])
+            ])
+         ])
+      ]
+    )].
+
+abstract_job(Time) ->
+    Pairs = abstract_apply(gre, pairs, [?erl:variable("Meta")]),
+    Runtime = ?erl:list([?erl:tuple([?erl:atom(runtime), Time])]),
+    [abstract_apply(gre, make, 
+              [abstract_apply(erlang, '++', [Pairs, Runtime]),
+               ?erl:abstract([list])])].
+
 %% @private Return the clauses of the info/1 function.
 abstract_info(#module{'query'=Query}) ->
     [?erl:clause([?erl:abstract(K)], none, V)
@@ -190,17 +275,27 @@ abstract_info(#module{'query'=Query}) ->
         {'query', abstract_query(Query)},
         {input, abstract_getcount(input)},
         {filter, abstract_getcount(filter)},
-        {output, abstract_getcount(output)}
+        {output, abstract_getcount(output)},
+        {job_input, abstract_getcount(job_input)},
+        {job_run, abstract_getcount(job_run)},
+        {job_time, abstract_getcount(job_time)},
+        {job_error, abstract_getcount(job_error)}
     ]].
 
 
 abstract_reset() ->
     [?erl:clause([?erl:abstract(K)], none, V)
         || {K, V} <- [
-        {all, abstract_resetcount([input, filter, output])},
+        {all, abstract_resetcount([input, filter, output, 
+                                   job_input, job_run, 
+                                   job_time, job_error])},
         {input, abstract_resetcount(input)},
         {filter, abstract_resetcount(filter)},
-        {output, abstract_resetcount(output)}
+        {output, abstract_resetcount(output)},
+        {job_input, abstract_resetcount(job_input)},
+        {job_run, abstract_resetcount(job_run)},
+        {job_time, abstract_resetcount(job_time)},
+        {job_error, abstract_resetcount(job_error)}
     ]].
 
 
@@ -323,6 +418,20 @@ abstract_with(Fun, Data, State) when is_function(Fun, 1); is_function(Fun, 2)  -
     abstract_getparam(Fun, fun(#state{event=Event, paramvars=Params}) ->
             {_, Fun2} = lists:keyfind(Fun, 1, Params),
             [abstract_with_({Fun, Fun2}, Event, Data)]
+%=======
+%-spec abstract_with(fun((gre:event()) -> term()), #module{}, #state{}) -> [syntaxTree()].
+%abstract_with(Fun, Store, State) when is_function(Fun, 1); is_function(Fun, 2)  ->
+%    abstract_getparam(Fun, fun(#state{event=Event, paramvars=Params}) ->
+%            {_, Fun2} = lists:keyfind(Fun, 1, Params),
+%            [?erl:application(none, Fun2, 
+%                              case Fun of
+%                                  _ when is_function(Fun, 1) ->
+%                                     [Event];
+%                                  _ when is_function(Fun, 2) ->
+%                                     [Event, ?erl:abstract(Store)]
+%                              end
+%                             )]
+%>>>>>>> Add support for job processing and variable storage with local state
         end, State).
 
 abstract_within([{H, Fun, Data}|T], OnNomatch, State) ->
@@ -487,7 +596,9 @@ abstract_getcount(Counter) ->
         [abstract_apply(table, [?erl:atom(counters)]), Counter])].
 
 %% @private Return an expression to reset a counter.
--spec abstract_resetcount(atom() | [filter | input | output]) -> [syntaxTree()].
+-spec abstract_resetcount(atom() | [filter | input | output | 
+                                    job_input | job_run | job_time | job_error ]) 
+                                                            -> [syntaxTree()].
 abstract_resetcount(Counter) ->
     [abstract_apply(gr_counter, reset_counters,
         [abstract_apply(table, [?erl:atom(counters)]),
