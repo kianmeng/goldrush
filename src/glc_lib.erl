@@ -65,6 +65,11 @@ matches({Key, '=', Term}, Event) ->
         {true, Term2} -> Term2 =:= Term;
         false -> false
     end;
+matches({Key, '!=', Term}, Event) ->
+    case gre:find(Key, Event) of
+        {true, Term2} -> Term2 =/= Term;
+        false -> false
+    end;
 matches({Key, '>', Term}, Event) ->
     case gre:find(Key, Event) of
         {true, Term2} -> Term2 > Term;
@@ -252,6 +257,8 @@ is_valid({Field, '<', _Term}) when is_atom(Field) ->
 is_valid({Field, '=<', _Term}) when is_atom(Field) ->
     true;
 is_valid({Field, '=', _Term}) when is_atom(Field) ->
+    true;
+is_valid({Field, '!=', _Term}) when is_atom(Field) ->
     true;
 is_valid({Field, '>=', _Term}) when is_atom(Field) ->
     true;

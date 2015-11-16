@@ -51,6 +51,11 @@ Select all events where 'a' exists and is equal to 0.
     glc:eq(a, 0).
 #+END_EXAMPLE
 
+Select all events where 'a' exists and is not equal to 0.
+#+BEGIN_EXAMPLE
+    glc:neq(a, 0).
+#+END_EXAMPLE
+
 Select all events where 'a' exists and is less than 0.
 #+BEGIN_EXAMPLE
     glc:lt(a, 0).
@@ -220,6 +225,8 @@ or
 #+END_EXAMPLE
 
 * CHANGELOG 
+0.1.8
+- Add support for not equal
 
 0.1.7
 - Support multiple functions specified using `with/2` 
