@@ -253,10 +253,11 @@ abstract_filter_({Key, '!'}, OnMatch, OnNomatch, State) ->
         _OnMatch=fun(#state{}=State2) -> OnMatch(State2) end,
                     State);
 abstract_filter_({Key, Op, Value}, OnMatch, OnNomatch, State)
-        when Op =:= '>'; Op =:= '='; Op =:= '<';
+        when Op =:= '>'; Op =:= '='; Op =:= '!='; Op =:= '<';
              Op =:= '>='; Op =:= '=<'; Op =:= '<=' ->
     Op2 = case Op of 
               '=' -> '=:=';  
+              '!=' -> '=/=';  
               '<=' -> '=<';
               Op -> Op 
           end,

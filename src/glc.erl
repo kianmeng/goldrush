@@ -28,6 +28,8 @@
 %% glc:gt(a, 0).
 %% %% Select all events where 'a' exists and is equal to 0.
 %% glc:eq(a, 0).
+%% %% Select all events where 'a' exists and is not equal to 0.
+%% glc:neq(a, 0).
 %% %% Select all events where 'a' exists and is less than 0.
 %% glc:lt(a, 0).
 %% %% Select all events where 'a' exists and is anything.
@@ -74,7 +76,7 @@
 
 -export([
     lt/2, lte/2,
-    eq/2,
+    eq/2, neq/2,
     gt/2, gte/2,
     wc/1,
     nf/1
@@ -112,6 +114,10 @@ lte(Key, Term) ->
 -spec eq(atom(), term()) -> glc_ops:op().
 eq(Key, Term) ->
     glc_ops:eq(Key, Term).
+
+-spec neq(atom(), term()) -> glc_ops:op().
+neq(Key, Term) ->
+    glc_ops:neq(Key, Term).
 
 -spec gt(atom(), term()) -> glc_ops:op().
 gt(Key, Term) ->
@@ -434,10 +440,20 @@ events_test_() ->
                 fun() ->
                     %% If a selection condition but no body is specified the event
                     %% counts as input to the query, but not as filtered out.
-                    {compiled, Mod} = setup_query(testmod7, glc:eq('$n', 'noexists@nohost')),
+                    {compiled, Mod} = setup_query(testmod7a, glc:eq('$n', 'noexists@nohost')),
                     glc:handle(Mod, gre:make([{'$n', 'noexists@nohost'}], [list])),
                     ?assertEqual(1, Mod:info(input)),
                     ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(1, Mod:info(output))
+                end
+            },
+            {"opfilter not equal test",
+                fun() ->
+                    {compiled, Mod} = setup_query(testmod7b, glc:neq('$n', 'noexists@nohost')),
+                    glc:handle(Mod, gre:make([{'$n', 'noexists@nohost'}], [list])),
+                    glc:handle(Mod, gre:make([{'$n', 'notexists@nohost'}], [list])),
+                    ?assertEqual(2, Mod:info(input)),
+                    ?assertEqual(1, Mod:info(filter)),
                     ?assertEqual(1, Mod:info(output))
                 end
             },
