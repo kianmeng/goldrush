@@ -221,13 +221,14 @@ Return the stored value in this query module.
 
 
 * Job processing with composed modules 
-  - You can use query modules to execute jobs, if the job doesn't error, process an event.
+  - You can use query modules to execute jobs, if the job errors or not, process an event.
   - `with' is similar to `run', the main difference is additional statistics and execution order
+  - when a job completes in error, the event data will contain an additional {error, _} item
 
 To execute a job through the query module, inputting an event on success.
 #+BEGIN_EXAMPLE
     Event = gre:make([{'a', 2}], [list]).
-    Result = glc:run(Module, fun(Event, State) ->
+    {ExecutionTime, Result}= glc:run(Module, fun(Event, State) ->
         %% do not end with {error, _} or throw an exception 
     end, Event).
 #+END_EXAMPLE
@@ -287,6 +288,10 @@ Return the query combining the conditional logic of multiple modules
 glc_lib:reduce(glc:all([Module1:info('query'), Module2:info('query')]).
 #+END_EXAMPLE
 
+Return all statistics from this query module.
+#+BEGIN_EXAMPLE
+glc:info(Module).
+#+END_EXAMPLE
 
 * Build
 
