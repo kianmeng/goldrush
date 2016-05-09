@@ -93,9 +93,6 @@ abstract_module_(Module, #module{tables=Tables,
         ?erl:arity_qualifier(
             ?erl:atom(table),
             ?erl:integer(1)),
-        %?erl:arity_qualifier(
-        %    ?erl:atom(sidejob),
-        %    ?erl:integer(2)),
         ?erl:arity_qualifier(
             ?erl:atom(runjob),
             ?erl:integer(2)),
@@ -162,11 +159,11 @@ abstract_module_(Module, #module{tables=Tables,
              [?erl:application(none,
                         ?erl:atom(job_result), [
                           ?erl:catch_expr(
-                            abstract_apply(timer, tc, [
+                            abstract_apply(glc_run, execute, [
                                 ?erl:variable("Fun"),
                                 ?erl:list([?erl:variable("Meta"), 
                                            ?erl:abstract(Store)])
-                                ])),
+                            ])),
                             ?erl:variable("Meta")])
              ] 
         )]),
@@ -232,12 +229,6 @@ abstract_runjob(#module{'query'=_Query, store=_Store}) ->
        ?erl:case_expr(?erl:variable("JobResult"),
          [
           ?erl:clause(
-            [?erl:tuple([?erl:atom('EXIT'),?erl:variable("Reason")])],
-            none,
-            [abstract_count(job_error),
-             ?erl:tuple([?erl:atom(error), ?erl:variable("Reason")])]),
-
-          ?erl:clause(
             [?erl:tuple([?erl:variable("Time"), ?erl:variable("Result")])],
             none,
             [?erl:case_expr(?erl:variable("Result"),
@@ -245,16 +236,24 @@ abstract_runjob(#module{'query'=_Query, store=_Store}) ->
                 ?erl:clause(
                   [?erl:tuple([?erl:atom(error),?erl:variable("Reason")])],
                   none,
-                  [abstract_count(job_error),
-                   ?erl:tuple([?erl:atom(error), ?erl:variable("Reason")])]),
+                  [abstract_count(input), abstract_count(job_error),
+                   ?erl:application(none, ?erl:atom(handle_), 
+                        abstract_job(Time, [?erl:tuple([?erl:atom(error), 
+                                                        ?erl:variable("Reason")])])),
+                   abstract_count(job_time, ?erl:variable("Time")),
+                   ?erl:tuple([?erl:variable("Time"), 
+                               ?erl:tuple([?erl:atom(error), 
+                                           ?erl:variable("Reason")])])]),
 
                 ?erl:clause(
                   [?erl:variable("Result")],
                   none,
-                  [abstract_count(job_run),
-                   ?erl:application(none, ?erl:atom(handle_), abstract_job(Time)),
+                  [abstract_count(input), abstract_count(job_run),
+                   ?erl:application(none, ?erl:atom(handle_), 
+                        abstract_job(Time)),
                    abstract_count(job_time, ?erl:variable("Time")),
-                   ?erl:variable("Result")])
+                   ?erl:tuple([?erl:variable("Time"), 
+                               ?erl:variable("Result")])])
                ])
             ])
          ])
@@ -262,10 +261,13 @@ abstract_runjob(#module{'query'=_Query, store=_Store}) ->
     )].
 
 abstract_job(Time) ->
+    abstract_job(Time, []).
+abstract_job(Time, Error) ->
     Pairs = abstract_apply(gre, pairs, [?erl:variable("Meta")]),
     Runtime = ?erl:list([?erl:tuple([?erl:atom(runtime), Time])]),
     [abstract_apply(gre, make, 
-              [abstract_apply(erlang, '++', [Pairs, Runtime]),
+              [abstract_apply(erlang, '++', [?erl:list(Error), 
+                             abstract_apply(erlang, '++', [Pairs, Runtime])]),
                ?erl:abstract([list])])].
 
 %% @private Return the clauses of the info/1 function.
@@ -312,7 +314,7 @@ abstract_filter({Type, [{with, _Cond, _Fun}|_] = I}, Data, State) when Type =:= 
         _OnNomatch=fun(_State2) -> [abstract_count(filter)] end, State);
 abstract_filter([{with, _Cond, _Fun}|_] = I, Data, State) ->
     OnNomatch = fun(_State2) -> [abstract_count(filter, 0)] end,
-    Funs = lists:foldl(fun({with, Cond, Fun}, Acc) -> 
+    Funs = lists:foldr(fun({with, Cond, Fun}, Acc) -> 
               [{Cond, Fun, Data}|Acc]
       end, [], I),
     abstract_within(Funs, OnNomatch, State);
