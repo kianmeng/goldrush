@@ -203,10 +203,6 @@ abstract_query({any, [{with, _Q, _A}|_] = I}) ->
 abstract_query({all, [{with, _Q, _A}|_] = I}) ->
     Queries = glc_lib:reduce(glc:all([Q || {with, Q, _} <- I])),
     [?erl:abstract(Queries)];
-%=======
-%abstract_query({with, _, _}) ->
-%    [?erl:abstract([])];
-%>>>>>>> Add support for job processing and variable storage with local state
 abstract_query(Query) ->
     [?erl:abstract(Query)].
 
@@ -420,20 +416,6 @@ abstract_with(Fun, Data, State) when is_function(Fun, 1); is_function(Fun, 2)  -
     abstract_getparam(Fun, fun(#state{event=Event, paramvars=Params}) ->
             {_, Fun2} = lists:keyfind(Fun, 1, Params),
             [abstract_with_({Fun, Fun2}, Event, Data)]
-%=======
-%-spec abstract_with(fun((gre:event()) -> term()), #module{}, #state{}) -> [syntaxTree()].
-%abstract_with(Fun, Store, State) when is_function(Fun, 1); is_function(Fun, 2)  ->
-%    abstract_getparam(Fun, fun(#state{event=Event, paramvars=Params}) ->
-%            {_, Fun2} = lists:keyfind(Fun, 1, Params),
-%            [?erl:application(none, Fun2, 
-%                              case Fun of
-%                                  _ when is_function(Fun, 1) ->
-%                                     [Event];
-%                                  _ when is_function(Fun, 2) ->
-%                                     [Event, ?erl:abstract(Store)]
-%                              end
-%                             )]
-%>>>>>>> Add support for job processing and variable storage with local state
         end, State).
 
 abstract_within([{H, Fun, Data}|T], OnNomatch, State) ->

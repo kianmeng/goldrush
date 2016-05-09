@@ -301,6 +301,9 @@ or
 #+END_EXAMPLE
 
 * CHANGELOG 
+0.1.9
+- Add support for running jobs
+
 0.1.8
 - Add support for not equal
 
@@ -308,6 +311,10 @@ or
 - Support multiple functions specified using `with/2` 
 - Add support for greater than or less than operators
 - Add state storage option for output events or lookup
+
+0.1.7
+- Add job execution and timings
+- Add state storage option 
 
 0.1.7
 - Add job execution and timings
