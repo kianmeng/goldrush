@@ -322,6 +322,12 @@ reset_counters(Module) ->
 reset_counters(Module, Counter) ->
     Module:reset_counters(Counter).
 
+prepare_store(Store) ->
+    lists:map(fun({K, V}) when is_pid(V) 
+                        -> {K, {pid, binary_to_list(term_to_binary(V))}} ;
+                 ({K, V}) -> {K, V} 
+          end, Store).
+
 %% @private Map a query to a module data term.
 -spec module_data(atom(), term(), term()) -> {ok, #module{}}.
 module_data(Module, Query, Store) ->
@@ -337,7 +343,8 @@ module_data(Module, Query, Store) ->
     %% function maps names to registered processes response for those tables.
     Tables = module_tables(Module),
     Query2 = glc_lib:reduce(Query),
-    {ok, #module{'query'=Query, tables=Tables, qtree=Query2, store=Store}}.
+    Store2 = prepare_store(Store),
+    {ok, #module{'query'=Query, tables=Tables, qtree=Query2, store=Store2}}.
 
 %% @private Create a data managed supervised process for params, counter tables
 module_tables(Module) ->
