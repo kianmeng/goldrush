@@ -203,6 +203,9 @@ abstract_query({any, [{with, _Q, _A}|_] = I}) ->
 abstract_query({all, [{with, _Q, _A}|_] = I}) ->
     Queries = glc_lib:reduce(glc:all([Q || {with, Q, _} <- I])),
     [?erl:abstract(Queries)];
+abstract_query({ok, {other, Other}}) ->
+   SpcBin = abstract_apply(erlang, 'list_to_binary', [?erl:abstract(Other)]),
+   [?erl:tuple([?erl:atom(ok), abstract_apply(erlang, 'binary_to_term', [SpcBin])])];
 abstract_query(Query) ->
     [?erl:abstract(Query)].
 
