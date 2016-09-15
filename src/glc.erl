@@ -322,9 +322,10 @@ reset_counters(Module) ->
 reset_counters(Module, Counter) ->
     Module:reset_counters(Counter).
 
+prepare_store(Store) when not is_list(Store) -> Store;
 prepare_store(Store) ->
-    lists:map(fun({K, V}) when is_pid(V) 
-                        -> {K, {pid, binary_to_list(term_to_binary(V))}} ;
+    lists:map(fun({K, V}) when is_pid(V); is_port(V); is_reference(V) 
+                        -> {K, {other, binary_to_list(term_to_binary(V))}} ;
                  ({K, V}) -> {K, V} 
           end, Store).
 
@@ -1029,6 +1030,22 @@ events_test_() ->
                     ?assertEqual(1, Mod:info(filter)),
                     ?assertEqual(1, Mod:info(job_error)),
                     ?assertEqual(b, receive {b=Msg, _Store} -> Msg after 0 -> notcalled end)
+                end
+            },
+            {"with pid storage test",
+                fun() ->
+                    Self = self(),
+                    XPid = spawn(fun() -> receive {msg, Msg, Pid} -> Self ! {Msg, Pid} end end),
+                    Store = [{stored, XPid}],
+                    {compiled, Mod} = setup_query(testmod27,
+                        glc:with(glc:eq(a, 1), fun(Event, _EStore) -> 
+                           {ok, Pid} = glc:get(testmod27, stored),
+                           Pid ! {msg, gre:fetch(a, Event), Self}
+                         end),
+                         Store),
+                    glc:handle(Mod, gre:make([{a,1}], [list])),
+                    ?assertEqual(1, Mod:info(output)),
+                    ?assertEqual(1, receive {Msg, Pid} -> Pid ! Msg after 2 -> notcalled end)
                 end
             }
         ]
