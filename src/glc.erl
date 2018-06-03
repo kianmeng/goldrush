@@ -203,23 +203,29 @@ union(Queries) ->
 %% The counters are reset by default, unless Reset is set to false 
 -spec compile(atom(), glc_ops:op() | [glc_ops:op()]) -> {ok, atom()}.
 compile(Module, Query) ->
-    compile(Module, Query, undefined, true).
+    compile(Module, Query, [{statistics, true}]).
 
 -spec compile(atom(), glc_ops:op() | [glc_ops:op()], boolean()) -> {ok, atom()}.
-compile(Module, Query, Reset) when is_boolean(Reset) ->
-    compile(Module, Query, undefined, Reset);
+%compile(Module, Query, Reset) when is_boolean(Reset) ->
+%    compile(Module, Query, undefined, Reset);
 compile(Module, Query, undefined) ->
-    compile(Module, Query, undefined, true);
+    compile(Module, Query, [{statistics, true}]);
 compile(Module, Query, Store) when is_list(Store) ->
-    compile(Module, Query, Store, true).
+    case lists:keyfind(statistics, 1, Store) of
+        {_, true} -> 
+            compile(Module, Query, Store, true);
+        _ -> 
+            compile(Module, Query, Store, false)
+    end.
 
-compile(Module, Query, Store, Reset) ->
-    {ok, ModuleData} = module_data(Module, Query, Store),
-    case glc_code:compile(Module, ModuleData) of
-        {ok, Module} when Reset ->
+compile(Module, Query, Store, Stats) ->
+    {ok, ModuleData} = module_data(Module, Query, Store, Stats),
+    case glc_code:compile(Module, ModuleData, Stats) of
+        {ok, Module} when is_boolean(Stats), Stats =:= true ->
             reset_counters(Module),
             {ok, Module};
         {ok, Module} ->
+            ok = take_down(Module, Stats),
             {ok, Module}
     end.
 
@@ -284,6 +290,33 @@ job_input(Module) ->
 job_time(Module) ->
     Module:info(job_time).
 
+-spec take_down(atom(), boolean()) -> ok.
+take_down(Module, false) ->
+    Counts = counts_name(Module),
+    ManageCounts = manage_counts_name(Module),
+
+    _ = [ begin 
+        ok = supervisor:terminate_child(Sup, Name),
+        ok = supervisor:delete_child(Sup, Name)
+      end || {Sup, Name} <- 
+        [{gr_manager_sup, ManageCounts},
+         {gr_counter_sup, Counts}]
+    ],
+    ok;
+take_down(Module, true) ->
+    Params = params_name(Module),
+    ManageParams = manage_params_name(Module),
+    catch (take_down(Module, false)),
+
+    _ = [ begin 
+        ok = supervisor:terminate_child(Sup, Name),
+        ok = supervisor:delete_child(Sup, Name)
+      end || {Sup, Name} <- 
+        [{gr_manager_sup, ManageParams},
+         {gr_param_sup, Params}]
+    ],
+    ok.
+
 %% @doc Release a compiled query.
 %%
 %% This releases all resources allocated by a compiled query. The query name
@@ -291,19 +324,7 @@ job_time(Module) ->
 %% function will shutdown all relevant processes and purge/delete the module.
 -spec delete(atom()) -> ok.
 delete(Module) ->
-    Params = params_name(Module),
-    Counts = counts_name(Module),
-    ManageParams = manage_params_name(Module),
-    ManageCounts = manage_counts_name(Module),
-
-    _ = [ begin 
-        ok = supervisor:terminate_child(Sup, Name),
-        ok = supervisor:delete_child(Sup, Name)
-      end || {Sup, Name} <- 
-        [{gr_manager_sup, ManageParams}, {gr_manager_sup, ManageCounts},
-         {gr_param_sup, Params}, {gr_counter_sup, Counts}]
-    ],
-
+    ok = take_down(Module, true),
     code:soft_purge(Module),
     code:delete(Module),
     ok.
@@ -330,8 +351,8 @@ prepare_store(Store) ->
           end, Store).
 
 %% @private Map a query to a module data term.
--spec module_data(atom(), term(), term()) -> {ok, #module{}}.
-module_data(Module, Query, Store) ->
+-spec module_data(atom(), term(), term(), boolean()) -> {ok, #module{}}.
+module_data(Module, Query, Store, Stats) ->
     %% terms in the query which are not valid arguments to the
     %% erl_syntax:abstract/1 functions are stored in ETS.
     %% the terms are only looked up once they are necessary to
@@ -342,13 +363,13 @@ module_data(Module, Query, Store) ->
     %% the abstract_tables/1 function expects a list of name-atom pairs.
     %% tables are referred to by name in the generated code. the table/1
     %% function maps names to registered processes response for those tables.
-    Tables = module_tables(Module),
+    Tables = module_tables(Module, Stats),
     Query2 = glc_lib:reduce(Query),
     Store2 = prepare_store(Store),
     {ok, #module{'query'=Query, tables=Tables, qtree=Query2, store=Store2}}.
 
 %% @private Create a data managed supervised process for params, counter tables
-module_tables(Module) ->
+module_tables(Module, _Stats) ->
     Params = params_name(Module),
     Counts = counts_name(Module),
     ManageParams = manage_params_name(Module),
@@ -414,7 +435,7 @@ start() ->
 -include_lib("eunit/include/eunit.hrl").
 
 setup_query(Module, Query) ->
-    setup_query(Module, Query, undefined).
+    setup_query(Module, Query, [{statistics, true}]).
 
 setup_query(Module, Query, Store) ->
     ?assertNot(erlang:module_loaded(Module)),
@@ -460,9 +481,18 @@ events_test_() ->
                     ?assertEqual({null, false}, Mod:info('query'))
                 end
             },
+            {"no init counters test",
+                fun() ->
+                    {compiled, Mod} = setup_query(testmod4a, glc:null(false), [{statistics, false}]),
+                    glc:handle(Mod, gre:make([], [list])),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output))
+                end
+            },
             {"init counters test",
                 fun() ->
-                    {compiled, Mod} = setup_query(testmod4, glc:null(false)),
+                    {compiled, Mod} = setup_query(testmod4b, glc:null(false)),
                     ?assertEqual(0, Mod:info(input)),
                     ?assertEqual(0, Mod:info(filter)),
                     ?assertEqual(0, Mod:info(output))
@@ -639,7 +669,7 @@ events_test_() ->
             {"with function storage test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
                     {compiled, Mod} = setup_query(testmod15,
                         glc:with(glc:eq(a, 1), fun(Event, EStore) -> 
                            Self ! {gre:fetch(a, Event), EStore} end),
@@ -651,7 +681,7 @@ events_test_() ->
             },
             {"delete test",
                 fun() ->
-                    {compiled, Mod} = setup_query(testmod16, glc:null(false)),
+                    {compiled, Mod} = setup_query(testmod16a, glc:null(false)),
                     ?assert(is_atom(Mod:table(params))),
                     ?assertMatch([_|_], gr_param:info(Mod:table(params))),
                     ?assert(is_list(code:which(Mod))),
@@ -659,6 +689,27 @@ events_test_() ->
                     ?assert(is_pid(whereis(counts_name(Mod)))),
                     ?assert(is_pid(whereis(manage_params_name(Mod)))),
                     ?assert(is_pid(whereis(manage_counts_name(Mod)))),
+
+                    glc:delete(Mod),
+                    
+                    ?assertEqual(non_existing, code:which(Mod)),
+                    ?assertEqual(undefined, whereis(params_name(Mod))),
+                    ?assertEqual(undefined, whereis(counts_name(Mod))),
+                    ?assertEqual(undefined, whereis(manage_params_name(Mod))),
+                    ?assertEqual(undefined, whereis(manage_counts_name(Mod)))
+                end
+            },
+            {"delete test no stats",
+                fun() ->
+                    {compiled, Mod} = setup_query(testmod16b, glc:null(false),
+                        [{statistics, false}]),
+                    ?assert(is_atom(Mod:table(params))),
+                    ?assertMatch([_|_], gr_param:info(Mod:table(params))),
+                    ?assert(is_list(code:which(Mod))),
+                    ?assert(is_pid(whereis(params_name(Mod)))),
+                    ?assertNot(is_pid(whereis(counts_name(Mod)))),
+                    ?assert(is_pid(whereis(manage_params_name(Mod)))),
+                    ?assertNot(is_pid(whereis(manage_counts_name(Mod)))),
 
                     glc:delete(Mod),
                     
@@ -717,16 +768,35 @@ events_test_() ->
                     ?assertEqual(7, length(gr_counter:list(Mod:table(counters))))
                 end
             },
+            {"ets data recovery test no stats",
+                fun() ->
+                    Self = self(),
+                    {compiled, Mod} = setup_query(testmod18b,
+                        glc:with(glc:eq(a, 1), fun(Event) -> Self ! gre:fetch(a, Event) end),
+                            [{statistics, false}]),
+                    glc:handle(Mod, gre:make([{a,1}], [list])),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(1, receive Msg -> Msg after 0 -> notcalled end),
+                    ?assertEqual(1, length(gr_param:list(Mod:table(params)))),
+                    true = exit(whereis(Mod:table(params)), kill),
+                    ?assertEqual(undefined, whereis(Mod:table(counters))),
+                    ?assertEqual(0, Mod:info(input)),
+                    glc:handle(Mod, gre:make([{'a', 1}], [list])),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(1, length(gr_param:list(Mod:table(params))))
+                end
+            },
             {"run timed job test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
-                    Runtime = 0.15,
+                    Store = [{stored, value}, {statistics, true}],
+                    Runtime = 0.015,
                     {compiled, Mod} = setup_query(testmod19,
                                                   glc:gt(runtime, Runtime),
                                                   Store),
                     glc:run(Mod, fun(Event, EStore) -> 
-                        timer:sleep(100),
+                        timer:sleep(10),
                         Self ! {gre:fetch(a, Event), EStore}
                     end, gre:make([{a,1}], [list])),
                     ?assertEqual(0, Mod:info(output)),
@@ -739,7 +809,7 @@ events_test_() ->
                                                   Store),
                     glc:handle(Mod, gre:make([{'a', 1}], [list])),
                     glc:run(Mod, fun(Event, EStore) -> 
-                        timer:sleep(200),
+                        timer:sleep(30),
                         Self ! {gre:fetch(a, Event), EStore}
                     end, gre:make([{a,2}], [list])),
                     ?assertEqual(1, Mod:info(output)),
@@ -750,8 +820,11 @@ events_test_() ->
             },
             {"reset job counters",
                 fun() ->
-                    {compiled, Mod} = setup_query(testmod20,
-                        glc:any([glc:eq(a, 1), glc:gt(runtime, 0.15)])),
+                    Self = self(),
+                    Store = [{stored, value}, {statistics, true}],
+
+                    {compiled, Mod} = setup_query(testmod20a,
+                        glc:any([glc:eq(a, 1), glc:gt(runtime, 0.015)]), Store),
                     glc:handle(Mod, gre:make([{'a', 2}], [list])),
                     glc:handle(Mod, gre:make([{'b', 1}], [list])),
                     ?assertEqual(2, Mod:info(input)),
@@ -762,17 +835,20 @@ events_test_() ->
                     ?assertEqual(3, Mod:info(filter)),
                     ?assertEqual(1, Mod:info(output)),
 
-                    Self = self(),
                     glc:run(Mod, fun(Event, EStore) -> 
-                        timer:sleep(100),
+                        timer:sleep(20),
                         Self ! {gre:fetch(a, Event), EStore}
                     end, gre:make([{a,1}], [list])),
                     ?assertEqual(2, Mod:info(output)),
                     ?assertEqual(3, Mod:info(filter)),
-                    ?assertEqual(1, receive {Msg, undefined} -> Msg after 0 -> notcalled end),
+                    receive {Msg, _} ->
+                        ?assertEqual(1, Msg)
+                    after 0 ->
+                        erlang:error(notcalled)
+                    end,
 
                     {_, Msg1} = glc:run(Mod, fun(_Event, _EStore) -> 
-                        timer:sleep(200),
+                        timer:sleep(20),
                         {error, badtest}
                         
                     end, gre:make([{a,1}], [list])),
@@ -784,7 +860,7 @@ events_test_() ->
                     ?assertEqual({error, badtest}, Msg1),
 
                     {_, Msg2} = glc:run(Mod, fun(_Event, _EStore) -> 
-                        timer:sleep(20),
+                        timer:sleep(10),
                         {ok, goodtest}
                         
                     end, gre:make([{a,2}], [list])),
@@ -840,10 +916,110 @@ events_test_() ->
                     ?assertEqual(0, Mod:info(job_run))
                 end
             },
+            {"reset job counters with no statistics",
+                fun() ->
+                    Self = self(),
+                    Store = [{stored, value}, {statistics, false}],
+
+                    {compiled, Mod} = setup_query(testmod20b,
+                        glc:any([glc:eq(a, 1), glc:gt(runtime, 0.15)]), Store),
+                    glc:handle(Mod, gre:make([{'a', 2}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 1}], [list])),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    glc:handle(Mod, gre:make([{'a', 1}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 2}], [list])),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+
+                    glc:run(Mod, fun(Event, EStore) -> 
+                        Self ! {gre:fetch(a, Event), EStore}
+                    end, gre:make([{a,1}], [list])),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(filter)),
+
+                    % not working?
+                    % ?assertEqual(1, receive {Msg, undefined} -> Msg after 0 -> notcalled end),
+                    receive {Msg, _} ->
+                        ?assertEqual(1, Msg)
+                    after 0 ->
+                        erlang:error(notcalled)
+                    end,
+
+                    {_, Msg1} = glc:run(Mod, fun(_Event, _EStore) -> 
+                        timer:sleep(20),
+                        {error, badtest}
+                        
+                    end, gre:make([{a,1}], [list])),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    ?assertEqual({error, badtest}, Msg1),
+
+                    {_, Msg2} = glc:run(Mod, fun(_Event, _EStore) -> 
+                        timer:sleep(20),
+                        {ok, goodtest}
+                        
+                    end, gre:make([{a,2}], [list])),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    ?assertEqual({ok, goodtest}, Msg2),
+
+
+                    glc:reset_counters(Mod, input),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    glc:reset_counters(Mod, filter),
+                    ?assertEqual(0, glc:input(Mod)),
+                    ?assertEqual(0, glc:filter(Mod)),
+                    ?assertEqual(0, glc:output(Mod)),
+                    ?assertEqual(0, glc:job_input(Mod)),
+                    ?assertEqual(0, glc:job_error(Mod)),
+                    ?assertEqual(0, glc:job_run(Mod)),
+                    glc:reset_counters(Mod, output),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    glc:reset_counters(Mod, job_input),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    glc:reset_counters(Mod, job_error),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    glc:reset_counters(Mod, job_run),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_error)),
+                    ?assertEqual(0, Mod:info(job_run))
+                end
+            },
             {"variable storage test",
                 fun() ->
-                    {compiled, Mod} = setup_query(testmod20a,
-                        glc:eq(a, 2), [{stream, time}]),
+                    {compiled, Mod} = setup_query(testmod20c,
+                        glc:eq(a, 2), [{stream, time}, {statistics, true}]),
                     glc:handle(Mod, gre:make([{'a', 2}], [list])),
                     glc:handle(Mod, gre:make([{'b', 1}], [list])),
                     ?assertEqual(2, Mod:info(input)),
@@ -855,17 +1031,35 @@ events_test_() ->
                     ?assertEqual({error, undefined}, glc:get(Mod, beam))
                 end
             },
-            {"with multi function any test",
+            {"with multi function any test no stats",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, false}],
 
                     G1 = glc:with(glc:eq(a, 1), fun(_Event, EStore) -> 
                        Self ! {a, EStore} end),
                     G2 = glc:with(glc:eq(b, 2), fun(_Event, EStore) -> 
                        Self ! {b, EStore} end),
 
-                    {compiled, Mod} = setup_query(testmod20b, any([G1, G2]),
+                    {compiled, Mod} = setup_query(testmod20d, any([G1, G2]),
+                         Store),
+                    glc:handle(Mod, gre:make([{a,1}], [list])),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(a, receive {Msg, _Store} -> Msg after 0 -> notcalled end),
+                    ?assertEqual(b, receive {Msg, _Store} -> Msg after 0 -> notcalled end)
+                end
+            },
+            {"with multi function any test",
+                fun() ->
+                    Self = self(),
+                    Store = [{stored, value}, {statistics, true}],
+
+                    G1 = glc:with(glc:eq(a, 1), fun(_Event, EStore) -> 
+                       Self ! {a, EStore} end),
+                    G2 = glc:with(glc:eq(b, 2), fun(_Event, EStore) -> 
+                       Self ! {b, EStore} end),
+
+                    {compiled, Mod} = setup_query(testmod20e, any([G1, G2]),
                          Store),
                     glc:handle(Mod, gre:make([{a,1}], [list])),
                     ?assertEqual(1, Mod:info(output)),
@@ -876,7 +1070,7 @@ events_test_() ->
             {"with multi function all test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
 
                     G1 = glc:with(glc:eq(a, 1), fun(_Event, EStore) -> 
                        Self ! {a, EStore} end),
@@ -903,7 +1097,7 @@ events_test_() ->
             {"with multi-function output match test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
 
                     {compiled, Mod} = setup_query(testmod22,
                           [glc:with(glc:eq(a, 1), fun(Event, _EStore) -> 
@@ -920,7 +1114,7 @@ events_test_() ->
             {"with multi-function output double-match test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
                     {compiled, Mod} = setup_query(testmod23,
                           [glc:with(glc:eq(a, 1), fun(Event, _EStore) -> 
                               Self ! {a, gre:fetch(a, Event)} end),
@@ -936,7 +1130,7 @@ events_test_() ->
             {"with multi function complex match test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
 
                     G1 = glc:with(glc:gt(r, 0.1), fun(_Event, EStore) -> 
                        Self ! {a, EStore} end),
@@ -979,20 +1173,20 @@ events_test_() ->
             {"with single-function run test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
                     {compiled, Mod1} = setup_query(testmod25a,
-                        glc:with(glc:all([glc:gt(runtime, 0.15), glc:lt(a, 3)]), fun(Event, EStore) -> 
+                        glc:with(glc:all([glc:gt(runtime, 0.015), glc:lt(a, 3)]), fun(Event, EStore) -> 
                            Self ! {gre:fetch(a, Event), EStore} end),
                          Store),
-                    glc:run(Mod1, fun(_Event, _EStore) -> timer:sleep(200), ok end, gre:make([{a, 2}], [list])),
+                    glc:run(Mod1, fun(_Event, _EStore) -> timer:sleep(20), ok end, gre:make([{a, 2}], [list])),
                     ?assertEqual(1, Mod1:info(output)),
                     ?assertEqual(2, receive {Msg, Store} -> Msg after 250 -> notcalled end),
                     {compiled, Mod2} = setup_query(testmod25b,
-                        glc:with(glc:all([glc:gt(runtime, 0.15), glc:lt(a, 3)]), fun(Event, EStore) -> 
+                        glc:with(glc:all([glc:gt(runtime, 0.015), glc:lt(a, 3)]), fun(Event, EStore) -> 
                            Self ! {gre:fetch(a, Event), EStore}
                         end), Store),
                     {_, {error, later}} = glc:run(Mod2, fun(_Event, _EStore) -> 
-                           timer:sleep(200), 
+                           timer:sleep(20), 
                            erlang:exit(later)
                     end, gre:make([{a, 2}], [list])),
                     ?assertEqual(1, Mod2:info(output)),
@@ -1003,9 +1197,9 @@ events_test_() ->
             {"with multi-function output run error test",
                 fun() ->
                     Self = self(),
-                    Store = [{stored, value}],
+                    Store = [{stored, value}, {statistics, true}],
                     {compiled, Mod} = setup_query(testmod26,
-                          [glc:with(glc:gt(runtime, 0.15), fun(Event, _EStore) -> 
+                          [glc:with(glc:gt(runtime, 0.015), fun(Event, _EStore) -> 
                               Self ! {a, gre:fetch(b, Event)} 
                            end),
                            glc:with(glc:eq(c, 3), fun(Event, _EStore) -> 
@@ -1023,7 +1217,7 @@ events_test_() ->
                          Store),
                     Event = gre:make([{a,1}, {b, 3}, {c, 4}], [list]),
                     {_, {error, bye}} = glc:run(Mod, fun(_Event, _EStore) -> 
-                            timer:sleep(200),
+                            timer:sleep(20),
                             erlang:error(bye) 
                     end, Event),
                     ?assertEqual(3, Mod:info(output)),
@@ -1036,7 +1230,7 @@ events_test_() ->
                 fun() ->
                     Self = self(),
                     XPid = spawn(fun() -> receive {msg, Msg, Pid} -> Self ! {Msg, Pid} end end),
-                    Store = [{stored, XPid}],
+                    Store = [{stored, XPid}, {statistics, true}],
                     {compiled, Mod} = setup_query(testmod27,
                         glc:with(glc:eq(a, 1), fun(Event, _EStore) -> 
                            {ok, Pid} = glc:get(testmod27, stored),
