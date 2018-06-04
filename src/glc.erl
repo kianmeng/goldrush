@@ -205,27 +205,31 @@ union(Queries) ->
 compile(Module, Query) ->
     compile(Module, Query, [{statistics, true}]).
 
--spec compile(atom(), glc_ops:op() | [glc_ops:op()], boolean()) -> {ok, atom()}.
-%compile(Module, Query, Reset) when is_boolean(Reset) ->
-%    compile(Module, Query, undefined, Reset);
-compile(Module, Query, undefined) ->
-    compile(Module, Query, [{statistics, true}]);
-compile(Module, Query, Store) when is_list(Store) ->
+-spec compile(atom(), glc_ops:op() | [glc_ops:op()], atom() | list() | boolean()) -> {ok, atom()}.
+compile(Module, Query, Store) when not is_boolean(Store) ->
+    compile(Module, Query, Store, true);
+compile(Module, Query, Reset) when is_boolean(Reset) ->
+    compile(Module, Query, undefined, Reset).
+
+compile(Module, Query, Store, Reset) when Store =:= []; Store =:= undefined ->
+    compile(Module, Query, [{statistics, true}], Reset);
+compile(Module, Query, Store, Reset) when is_list(Store) ->
     case lists:keyfind(statistics, 1, Store) of
         {_, true} -> 
-            compile(Module, Query, Store, true);
+            compile(Module, Query, Store, true, Reset);
         _ -> 
-            compile(Module, Query, Store, false)
+            compile(Module, Query, Store, false, false)
     end.
 
-compile(Module, Query, Store, Stats) ->
+compile(Module, Query, Store, Stats, Reset) ->
     {ok, ModuleData} = module_data(Module, Query, Store, Stats),
     case glc_code:compile(Module, ModuleData, Stats) of
-        {ok, Module} when is_boolean(Stats), Stats =:= true ->
+        {ok, Module} when Stats =:= true, Reset =:= true ->
             reset_counters(Module),
             {ok, Module};
+        {ok, Module} when Stats =:= true ->
+            {ok, Module};
         {ok, Module} ->
-            ok = take_down(Module, Stats),
             {ok, Module}
     end.
 
@@ -290,8 +294,9 @@ job_input(Module) ->
 job_time(Module) ->
     Module:info(job_time).
 
--spec take_down(atom(), boolean()) -> ok.
-take_down(Module, false) ->
+%% @doc Terminate a modules supervisors
+-spec terminate(atom(), all | counters) -> ok.
+terminate(Module, counters) ->
     Counts = counts_name(Module),
     ManageCounts = manage_counts_name(Module),
 
@@ -303,10 +308,10 @@ take_down(Module, false) ->
          {gr_counter_sup, Counts}]
     ],
     ok;
-take_down(Module, true) ->
+terminate(Module, all) ->
     Params = params_name(Module),
     ManageParams = manage_params_name(Module),
-    catch (take_down(Module, false)),
+    catch (terminate(Module, counters)), % Catch on no statistics option
 
     _ = [ begin 
         ok = supervisor:terminate_child(Sup, Name),
@@ -324,7 +329,7 @@ take_down(Module, true) ->
 %% function will shutdown all relevant processes and purge/delete the module.
 -spec delete(atom()) -> ok.
 delete(Module) ->
-    ok = take_down(Module, true),
+    ok = terminate(Module, all),
     code:soft_purge(Module),
     code:delete(Module),
     ok.
@@ -369,28 +374,37 @@ module_data(Module, Query, Store, Stats) ->
     {ok, #module{'query'=Query, tables=Tables, qtree=Query2, store=Store2}}.
 
 %% @private Create a data managed supervised process for params, counter tables
-module_tables(Module, _Stats) ->
+-spec module_tables(atom(), boolean()) -> list().
+module_tables(Module, Stats) ->
     Params = params_name(Module),
     Counts = counts_name(Module),
     ManageParams = manage_params_name(Module),
     ManageCounts = manage_counts_name(Module),
-    Counters = [{input,0}, {filter,0}, {output,0}, 
-                {job_input, 0}, {job_run,0},  {job_time, 0},
-                {job_error, 0}],
 
     _ = supervisor:start_child(gr_param_sup, 
         {Params, {gr_param, start_link, [Params]}, 
         transient, brutal_kill, worker, [Params]}),
-    _ = supervisor:start_child(gr_counter_sup, 
-        {Counts, {gr_counter, start_link, [Counts]}, 
-        transient, brutal_kill, worker, [Counts]}),
     _ = supervisor:start_child(gr_manager_sup, 
         {ManageParams, {gr_manager, start_link, [ManageParams, Params, []]},
         transient, brutal_kill, worker, [ManageParams]}),
-    _ = supervisor:start_child(gr_manager_sup, {ManageCounts, 
-        {gr_manager, start_link, [ManageCounts, Counts, Counters]},
-        transient, brutal_kill, worker, [ManageCounts]}),
-    [{params,Params}, {counters, Counts}].
+
+    Tables = case Stats of
+        true ->
+            Counters = [{input,0}, {filter,0}, {output,0}, 
+                        {job_input, 0}, {job_run,   0},  
+                        {job_time,  0}, {job_error, 0}],
+            _ = supervisor:start_child(gr_counter_sup, 
+                {Counts, {gr_counter, start_link, [Counts]}, 
+                transient, brutal_kill, worker, [Counts]}),
+            _ = supervisor:start_child(gr_manager_sup, {ManageCounts, 
+                {gr_manager, start_link, [ManageCounts, Counts, Counters]},
+                transient, brutal_kill, worker, [ManageCounts]}),
+            [{counters, Counts}];
+        false ->
+            [{counters, undefined}]
+     end,
+    [{params, Params} | Tables].
+
 
 reg_name(Module, Name) ->
     list_to_atom("gr_" ++ atom_to_list(Module) ++ Name).
@@ -438,8 +452,14 @@ setup_query(Module, Query) ->
     setup_query(Module, Query, [{statistics, true}]).
 
 setup_query(Module, Query, Store) ->
-    ?assertNot(erlang:module_loaded(Module)),
-    ?assertEqual({ok, Module}, case (catch compile(Module, Query, Store)) of
+    setup_query(Module, Query, Store, true).
+
+setup_query(Module, Query, Store, Reset) ->
+    case Reset of
+        true  -> ?assertNot(erlang:module_loaded(Module));
+        false -> ?assert(erlang:module_loaded(Module))
+    end,
+    ?assertEqual({ok, Module}, case (catch compile(Module, Query, Store, Reset)) of
         {'EXIT',_}=Error -> ?debugFmt("~p", [Error]), Error; Else -> Else end),
     ?assert(erlang:function_exported(Module, table, 1)),
     ?assert(erlang:function_exported(Module, handle, 1)),
@@ -722,7 +742,7 @@ events_test_() ->
             },
             {"reset counters test",
                 fun() ->
-                    {compiled, Mod} = setup_query(testmod17,
+                    {compiled, Mod} = setup_query(testmod17a,
                         glc:any([glc:eq(a, 1), glc:eq(b, 2)])),
                     glc:handle(Mod, gre:make([{'a', 2}], [list])),
                     glc:handle(Mod, gre:make([{'b', 1}], [list])),
@@ -730,6 +750,37 @@ events_test_() ->
                     ?assertEqual(2, Mod:info(filter)),
                     glc:handle(Mod, gre:make([{'a', 1}], [list])),
                     glc:handle(Mod, gre:make([{'b', 2}], [list])),
+                    ?assertEqual(4, Mod:info(input)),
+                    ?assertEqual(2, Mod:info(filter)),
+                    ?assertEqual(2, Mod:info(output)),
+
+                    glc:reset_counters(Mod, input),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(2, Mod:info(filter)),
+                    ?assertEqual(2, Mod:info(output)),
+                    glc:reset_counters(Mod, filter),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(2, Mod:info(output)),
+                    glc:reset_counters(Mod),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output))
+                end
+            },
+            {"recompile without reset counters test",
+                fun() ->
+                    {compiled, Mod} = setup_query(testmod17b,
+                        glc:any([glc:eq(a, 1), glc:eq(b, 2)]), []),
+                    glc:handle(Mod, gre:make([{'a', 2}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 1}], [list])),
+                    ?assertEqual(2, Mod:info(input)),
+                    ?assertEqual(2, Mod:info(filter)),
+                    glc:handle(Mod, gre:make([{'a', 1}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 2}], [list])),
+
+                    {compiled, Mod} = setup_query(testmod17b,
+                        glc:any([glc:eq(a, 1), glc:eq(b, 2)]), [], false),
                     ?assertEqual(4, Mod:info(input)),
                     ?assertEqual(2, Mod:info(filter)),
                     ?assertEqual(2, Mod:info(output)),
