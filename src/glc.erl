@@ -72,7 +72,8 @@
     delete/1,
     reset_counters/1,
     reset_counters/2,
-    start/0
+    start/0,
+    terminate/2
 ]).
 
 -export([
@@ -308,10 +309,9 @@ terminate(Module, counters) ->
          {gr_counter_sup, Counts}]
     ],
     ok;
-terminate(Module, all) ->
+terminate(Module, params) ->
     Params = params_name(Module),
     ManageParams = manage_params_name(Module),
-    catch (terminate(Module, counters)), % Catch on no statistics option
 
     _ = [ begin 
         ok = supervisor:terminate_child(Sup, Name),
@@ -320,7 +320,10 @@ terminate(Module, all) ->
         [{gr_manager_sup, ManageParams},
          {gr_param_sup, Params}]
     ],
-    ok.
+    ok;
+terminate(Module, all) ->
+    catch (terminate(Module, counters)), % Catch on no statistics option
+    terminate(Module, params).
 
 %% @doc Release a compiled query.
 %%
@@ -768,9 +771,52 @@ events_test_() ->
                     ?assertEqual(0, Mod:info(output))
                 end
             },
-            {"recompile without reset counters test",
+            {"reset all counters test",
                 fun() ->
                     {compiled, Mod} = setup_query(testmod17b,
+                        glc:any([glc:eq(a, 1), glc:eq(b, 2)])),
+                    glc:handle(Mod, gre:make([{'a', 2}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 1}], [list])),
+                    ?assertEqual(2, Mod:info(input)),
+                    ?assertEqual(2, Mod:info(filter)),
+                    glc:handle(Mod, gre:make([{'a', 1}], [list])),
+                    glc:handle(Mod, gre:make([{'b', 2}], [list])),
+                    ?assertEqual(4, Mod:info(input)),
+                    ?assertEqual(2, Mod:info(filter)),
+                    ?assertEqual(2, Mod:info(output)),
+
+                    Self = self(),
+                    glc:run(Mod, fun(Event, EStore) -> 
+                        Self ! {gre:fetch(a, Event), EStore}
+                    end, [{a,1}]),
+
+                    glc:run(Mod, fun(Event, _EStore) -> 
+                        erlang:error(pow, Event)
+                    end, [{a,2}]),
+
+                    ?assertEqual(3, Mod:info(output)),
+                    ?assertEqual(3, Mod:info(filter)),
+                    ?assertEqual({1, [{statistics, true}]}, 
+                                 receive MsgStore -> 
+                                         MsgStore after 0 -> notcalled end),
+                    ?assertEqual(2, Mod:info(job_input)),
+                    ?assertEqual(1, Mod:info(job_run)),
+                    ?assert(0 < Mod:info(job_time)),
+                    ?assertEqual(1, Mod:info(job_error)),
+
+                    glc:reset_counters(Mod, all),
+                    ?assertEqual(0, Mod:info(input)),
+                    ?assertEqual(0, Mod:info(filter)),
+                    ?assertEqual(0, Mod:info(output)),
+                    ?assertEqual(0, Mod:info(job_input)),
+                    ?assertEqual(0, Mod:info(job_run)),
+                    ?assertEqual(0, Mod:info(job_time)),
+                    ?assertEqual(0, Mod:info(job_error))
+                end
+            },
+            {"recompile without reset counters test",
+                fun() ->
+                    {compiled, Mod} = setup_query(testmod17c,
                         glc:any([glc:eq(a, 1), glc:eq(b, 2)]), []),
                     glc:handle(Mod, gre:make([{'a', 2}], [list])),
                     glc:handle(Mod, gre:make([{'b', 1}], [list])),
@@ -779,7 +825,7 @@ events_test_() ->
                     glc:handle(Mod, gre:make([{'a', 1}], [list])),
                     glc:handle(Mod, gre:make([{'b', 2}], [list])),
 
-                    {compiled, Mod} = setup_query(testmod17b,
+                    {compiled, Mod} = setup_query(testmod17c,
                         glc:any([glc:eq(a, 1), glc:eq(b, 2)]), [], false),
                     ?assertEqual(4, Mod:info(input)),
                     ?assertEqual(2, Mod:info(filter)),

@@ -3,6 +3,7 @@
 .rebar
 *.plt
 ebin
+_build
 doc
 *.swp
 erl_crash.dump
