@@ -559,7 +559,7 @@ param_variable(Key) ->
 
 %% @ private Generate a list of field variable names.
 %% Walk the query tree and generate a safe variable name string for each field
-%% that is accessed by the conditions in the query. Only allow alpha-numeric.
+%% that is accessed by the conditions in the query. Only allow alphanumeric.
 %%-spec field_variables(glc_ops:op()) -> [{atom(), string()}].
 %%field_variables(Query) ->
 %%    lists:usort(field_variables_(Query)).

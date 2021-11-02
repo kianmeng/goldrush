@@ -18,7 +18,7 @@ Goldrush is a small Erlang app that provides fast event stream processing
  - match all input events (null passthrough) logic
 
 * Handle output events
- - Once a query has been composed the output action can be overriden
+ - Once a query has been composed the output action can be overridden
    with one or more erlang functions. The functions will be applied to each
    output event from the query.
 

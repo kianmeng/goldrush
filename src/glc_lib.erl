@@ -168,7 +168,7 @@ flatten_tag(_Tag, []) ->
 %% each sub-filter.
 %%
 %% Assume that the input has been flattened first in order to eliminate all
-%% occurances of an "any" filters being "sub-filters" of "any" filters.
+%% occurrences of an "any" filters being "sub-filters" of "any" filters.
 required({any, [H|_]=Conds}) ->
     Init = ordsets:from_list(case H of {all, Init2} -> Init2; H -> [H] end),
     case required(Conds, Init) of
@@ -204,7 +204,7 @@ required([], []) ->
 %% members.
 %%
 %% Assume that the input has been flattened first in order to eliminate all
-%% occurances of an "any" filters being "sub-filters" of "any" filters.
+%% occurrences of an "any" filters being "sub-filters" of "any" filters.
 common({all, Conds}) ->
     case common_(Conds, []) of
         {found, Found} ->
@@ -232,7 +232,7 @@ common_([H|T], Seen) ->
 common_([], _Seen) ->
     nonefound.
 
-%% @private Delete all occurances of constants.
+%% @private Delete all occurrences of constants.
 %%
 %% An "all" or "any" filter may be reduced to a constant outcome when all
 %% sub-filters has been factored out from the filter. In these cases the
@@ -242,10 +242,10 @@ constants(Query) ->
     
 
 
-%% @private Delete all occurances of a filter.
+%% @private Delete all occurrences of a filter.
 %%
 %% Assume that the function is called because a filter is tested
-%% by a parent filter. It is therefore safe to replace occurances
+%% by a parent filter. It is therefore safe to replace occurrences
 %% with a null filter that always returns true.
 delete({all, Conds}, Filter) ->
     {all, [delete(Cond, Filter) || Cond <- Conds, Cond =/= Filter]};
@@ -256,7 +256,7 @@ delete(Filter, Filter) ->
 delete(Cond, _Filter) ->
     Cond.
 
-%% @private Delete all occurances of multiple filters.
+%% @private Delete all occurrences of multiple filters.
 deleteall(Filter, [H|T]) ->
     deleteall(delete(Filter, H), T);
 deleteall(Filter, []) ->
